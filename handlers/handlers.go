@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -119,14 +120,18 @@ type Track struct {
 }
 
 func GetMusics(ctx *gin.Context) {
+	fmt.Print("hello, i got request")
+
 	token, err := GetSpotifyToken()
 	if err != nil {
+		log.Fatal(err)
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "try later"})
 		return
 	}
 
 	req, err := http.NewRequest("GET", "https://api.spotify.com/v1/playlists/0cwPcui7aGHkmfHZiD3Hb9", nil)
 	if err != nil {
+		log.Fatal(err)
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "try later"})
 		return
 	}
@@ -138,6 +143,58 @@ func GetMusics(ctx *gin.Context) {
 	client := &http.Client{}
 	res, err := client.Do(req)
 	if err != nil {
+		log.Fatal(err)
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "try later"})
+		return
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "try later", "body": string(body)})
+		return
+	}
+
+	var playlist Playlist
+	if err := json.NewDecoder(res.Body).Decode(&playlist); err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"message": "try later", "error": err})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"message": "success", "body": playlist})
+}
+
+func GetPlaylist(ctx *gin.Context) {
+	playlistID, ok := ctx.Params.Get("playlistID")
+	if !ok {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "playlist not found"})
+		return
+	}
+
+	token, err := GetSpotifyToken()
+	if err != nil {
+		log.Fatal(err)
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "try later"})
+		return
+	}
+
+	spotifyPlaylistEndpoint := fmt.Sprintf("https://api.spotify.com/v1/playlists/%s", playlistID)
+
+	req, err := http.NewRequest("GET", spotifyPlaylistEndpoint, nil)
+	if err != nil {
+		log.Fatal(err)
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "try later"})
+		return
+	}
+
+	authStr := fmt.Sprintf("Bearer %s", token.AccessToken)
+
+	req.Header.Set("Authorization", authStr)
+
+	client := &http.Client{}
+	res, err := client.Do(req)
+	if err != nil {
+		log.Fatal(err)
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "try later"})
 		return
 	}
