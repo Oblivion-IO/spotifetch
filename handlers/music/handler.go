@@ -1,6 +1,7 @@
-package handlers
+package music
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -10,15 +11,21 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 )
 
-type SpotifyToken struct {
-	AccessToken string `json:"access_token"`
-	TokenType   string `json:"token_type"`
-	ExpiresIn   int    `json:"expires_in"`
+type MusicHandler struct {
+	Redis *redis.Client
+}
+
+func NewMusicHandler(rdb *redis.Client) *MusicHandler {
+	return &MusicHandler{
+		Redis: rdb,
+	}
 }
 
 func getAuthHeader(clientID, clientSecret string) string {
@@ -27,8 +34,37 @@ func getAuthHeader(clientID, clientSecret string) string {
 	return "Basic " + encodedAuth
 }
 
-func GetSpotifyToken() (*SpotifyToken, error) {
-	err := godotenv.Load()
+func getToken(rdb *redis.Client, ctx context.Context, key string) (string, error) {
+	val, err := rdb.Get(ctx, key).Result()
+	if err == redis.Nil {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return val, nil
+}
+
+func saveToken(rdb *redis.Client, ctx context.Context, key string, token string, ttl time.Duration) error {
+	return rdb.Set(ctx, key, token, ttl).Err()
+}
+
+// GET Spotify token
+func (m *MusicHandler) getSpotifyToken(ctx context.Context) (*SpotifyToken, error) {
+	tokenVal, err := getToken(m.Redis, ctx, "spotify_token")
+	if err != nil {
+		return nil, fmt.Errorf("smth went wrong with redis while getting spt tkn %v", err)
+	}
+
+	fmt.Println(tokenVal)
+
+	if tokenVal != "" {
+		return &SpotifyToken{
+			AccessToken: tokenVal,
+		}, nil
+	}
+
+	err = godotenv.Load()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load .env")
 	}
@@ -68,61 +104,14 @@ func GetSpotifyToken() (*SpotifyToken, error) {
 		return nil, err
 	}
 
+	saveToken(m.Redis, ctx, "spotify_token", token.AccessToken, time.Duration(token.ExpiresIn)*time.Second)
+
 	return &token, nil
 }
 
-type Playlist struct {
-	ID           string       `json:"id"`
-	Name         string       `json:"name"`
-	ExternalUrls ExternalUrls `json:"external_urls"`
-	Owner        Owner        `json:"owner"`
-	Tracks       TracksObject `json:"tracks"`
-}
-
-type TracksObject struct {
-	Items []PlaylistItem `json:"items"`
-}
-
-type PlaylistItem struct {
-	Track Track `json:"track"`
-}
-
-type ExternalUrls struct {
-	Spotify string `json:"spotify"`
-}
-
-type Owner struct {
-	DisplayName    string       `json:"display_name"`
-	ID             string       `json:"id"`
-	ExExternalUrls ExternalUrls `json:"external_urls"`
-}
-
-type Artist struct {
-	ID           string       `json:"id"`
-	Name         string       `json:"name"`
-	ExternalUrls ExternalUrls `json:"external_urls"`
-}
-
-type Album struct {
-	ExternalUrls ExternalUrls `json:"external_urls"`
-	Artists      []Artist     `json:"artists"`
-	ID           string       `json:"id"`
-	Name         string       `json:"name"`
-	ReleaseDate  string       `json:"release_date"`
-}
-
-type Track struct {
-	Name         string       `json:"name"`
-	DurationMs   int          `json:"duration_ms"`
-	ExternalUrls ExternalUrls `json:"external_urls"`
-	Artists      []Artist     `json:"artists"`
-	Album        Album        `json:"album"`
-}
-
-func GetMusics(ctx *gin.Context) {
-	fmt.Print("hello, i got request")
-
-	token, err := GetSpotifyToken()
+// GET my playlist
+func (m *MusicHandler) GetMusics(ctx *gin.Context) {
+	token, err := m.getSpotifyToken(ctx.Request.Context())
 	if err != nil {
 		log.Fatal(err)
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "try later"})
@@ -164,14 +153,15 @@ func GetMusics(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"message": "success", "body": playlist})
 }
 
-func GetPlaylist(ctx *gin.Context) {
+// GET Playlist by playlistID
+func (m *MusicHandler) GetPlaylist(ctx *gin.Context) {
 	playlistID, ok := ctx.Params.Get("playlistID")
 	if !ok {
 		ctx.JSON(http.StatusNotFound, gin.H{"error": "playlist not found"})
 		return
 	}
 
-	token, err := GetSpotifyToken()
+	token, err := m.getSpotifyToken(ctx.Request.Context())
 	if err != nil {
 		log.Fatal(err)
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "try later"})
